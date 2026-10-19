@@ -6,20 +6,25 @@ import (
 	"testing"
 )
 
+// testStore builds a tiny Store by hand, so the tests don't need the real Excel file.
 func testStore() *Store {
 	return &Store{data: map[string]map[string]float64{
 		"East Midlands": {"1": 60, "4.3": 12, "8": 6},
 	}}
 }
 
+// approx reports whether two numbers are within half a penny of each other.
 func approx(a, b float64) bool { return math.Abs(a-b) < 0.005 }
 
+// TestOutgoings checks the main calculation: weekly -> monthly, missing
+// codes, unmapped fields, and that every field is present.
 func TestOutgoings(t *testing.T) {
 	out, err := testStore().Outgoings("East Midlands")
 	if err != nil {
 		t.Fatal(err)
 	}
 
+	// Expected monthly values, worked out by hand.
 	// Weekly figures are converted to monthly: weekly * 52 / 12.
 	checks := map[string]float64{
 		"outgoings_food":           260.00, // 60 * 52/12
@@ -45,16 +50,20 @@ func TestOutgoings(t *testing.T) {
 	}
 }
 
+// TestOutgoingsUnknownRegion checks that a region not in the data gives an error.
 func TestOutgoingsUnknownRegion(t *testing.T) {
 	if _, err := testStore().Outgoings("Narnia"); err == nil {
 		t.Error("expected an error for an unknown region")
 	}
 }
 
-// Guards against double counting: no code may be used twice, and no code may
-// be used alongside its own parent (e.g. "9.4" together with "9.4.1").
+// TestMappingHasNoOverlap guards against double counting: no code may be
+// used twice, and no code may be used alongside its own parent
 func TestMappingHasNoOverlap(t *testing.T) {
+	// owner records which field uses each code: code -> field name.
 	owner := map[string]string{}
+
+	// Check 1: no code is used by more than one field.
 	for field, codes := range Mapping {
 		for _, c := range codes {
 			if prev, dup := owner[c]; dup {
@@ -63,6 +72,8 @@ func TestMappingHasNoOverlap(t *testing.T) {
 			owner[c] = field
 		}
 	}
+
+	// Check 2: no code is a parent of another used code.
 	for parent, pf := range owner {
 		for child, cf := range owner {
 			if strings.HasPrefix(child, parent+".") {

@@ -6,6 +6,7 @@ import (
 	"strings"
 )
 
+// Named errors, so the API can tell them apart and reply with a 422.
 var (
 	ErrInvalidPostcode = errors.New("invalid postcode")
 	ErrUnknownArea     = errors.New("unknown postcode area")
@@ -13,8 +14,6 @@ var (
 
 // areaToRegion maps a postcode area (the leading letters, e.g. "NG") to an
 // ONS region. Names must match the column headers in the ONS spreadsheet.
-// A few areas straddle regional borders (e.g. CH, SY, DN, TD); each is
-// mapped to the region containing most of it.
 var areaToRegion = map[string]string{
 	// North East
 	"DH": "North East", "DL": "North East", "NE": "North East", "SR": "North East", "TS": "North East",
@@ -58,19 +57,26 @@ var areaToRegion = map[string]string{
 	"BT": "Northern Ireland",
 }
 
-// Lookup resolves postcodes to ONS regions.
+// Lookup finds the region for a postcode. It has no data of its own (the
+// table above is shared), but being a type lets the API use it through an
+// interface, so a better lookup could replace it later.
 type Lookup struct{}
 
+// NewLookup creates a Lookup.
 func NewLookup() *Lookup { return &Lookup{} }
 
-// ForPostcode returns the ONS region for a full or partial UK postcode.
+// ForPostcode returns the ONS region for a UK postcode.
 func (l *Lookup) ForPostcode(postcode string) (string, error) {
+	// Step 1: get the area letters (e.g. "NG").
 	area, err := AreaFromPostcode(postcode)
 	if err != nil {
 		return "", err
 	}
+
+	// Step 2: look the area up in the table.
 	r, ok := areaToRegion[area]
 	if !ok {
+		// %w wraps the named error so callers can still detect it.
 		return "", fmt.Errorf("%w: %q", ErrUnknownArea, area)
 	}
 	return r, nil
@@ -78,14 +84,20 @@ func (l *Lookup) ForPostcode(postcode string) (string, error) {
 
 // AreaFromPostcode returns the leading letters of a postcode ("NG1 2ET" -> "NG").
 func AreaFromPostcode(postcode string) (string, error) {
+	// Tidy the input: remove spaces at the ends and use capitals.
 	pc := strings.ToUpper(strings.TrimSpace(postcode))
+
+	// Count how many letters the postcode starts with.
 	i := 0
 	for i < len(pc) && pc[i] >= 'A' && pc[i] <= 'Z' {
 		i++
 	}
-	// Areas are 1 or 2 letters, and must be followed by a digit.
+
+	// Valid if there are 1 or 2 letters, followed by a digit.
 	if i == 0 || i > 2 || i >= len(pc) || pc[i] < '0' || pc[i] > '9' {
 		return "", fmt.Errorf("%w: %q", ErrInvalidPostcode, postcode)
 	}
+
+	// Slice the string to keep just the letters at the start.
 	return pc[:i], nil
 }

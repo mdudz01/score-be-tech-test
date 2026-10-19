@@ -23,24 +23,37 @@ curl http://localhost:8080/cases/56763bf7-d046-4a54-a4a1-0728c724a092/outgoings
 
 ### Settings
 
-Settings are environment variables. All have defaults.
+Settings are environment variables. All have defaults, so the server runs from the repo root with no setup.
 
 - `PORT`: port to listen on. Default `8080`.
-- `REGIONAL_FILE`: path to the ONS regional spreadsheet. Default `regional.xlsx`. Set this to the real filename in the repo.
+- `REGIONAL_FILE`: path to the ONS regional spreadsheet. Default `ONSByRegion2019.xlsx`.
 - `CASE_FILE`: path to the case JSON file. Default `case.json`.
 
-Example (PowerShell):
+Example (PowerShell), using a different port and file:
 
 ```powershell
-$env:REGIONAL_FILE="your-file.xlsx"
+$env:PORT="9090"
+$env:REGIONAL_FILE="path/to/other-file.xlsx"
 go run ./cmd/server
 ```
+
+Paths are relative to the folder you run the command from, so run it from the repo root.
 
 ### Run the tests
 
 ```bash
 go test ./...
 ```
+
+### Check the ONS data without the server
+
+A small tool prints the estimated monthly outgoings for one region, without starting the API. It is useful for checking that the spreadsheet loads and the numbers look sensible.
+
+```bash
+go run ./cmd/probe
+```
+
+It reads `ONSByRegion2019.xlsx` and prints all 21 fields for the East Midlands, one per line. The fields can appear in a different order each time. Run it from the repo root so the file is found. To try another region, change the region name in `cmd/probe/main.go`.
 
 ## The API
 
@@ -55,8 +68,6 @@ Returns estimated **monthly** amounts in pounds, rounded to pence. All 21 fields
   "outgoings_mortgage_rent": 0
 }
 ```
-
-(Shortened here. The real response has every field from the brief.)
 
 If something goes wrong, you get a JSON error such as `{"error": "case not found"}` with one of these status codes:
 
@@ -98,7 +109,7 @@ The mapping is in one place, `Mapping` in `internal/ons/outgoings.go`, so it is 
 - `outgoings_investments`: 14.6 (savings and investments)
 - `outgoings_pension`: 14.1 (life assurance and pension contributions)
 - `outgoings_council_tax`: 13.1 (see the council tax note below)
-- `outgoings_car_costs`: 7.1, 7.2.1, 7.2.2, 7.2.3, 7.2.4 (buying and running a vehicle, including petrol and diesel)
+- `outgoings_car_costs`: 7.1, 7.2 (buying a vehicle, and running it, including petrol and diesel)
 - `outgoings_other_transport_costs`: 7.3 (trains, buses and so on)
 - `outgoings_television_license`: 9.4.3
 - `outgoings_sports`: 9.3.3, 9.4.1 (sports equipment, memberships and classes)
@@ -117,9 +128,9 @@ These three fields return **0** because there is no good ONS equivalent:
 
 ### About the numbers
 
+- All the ONS datasets in the repo are from **2019**. The regional file is `ONSByRegion2019.xlsx`. They are not adjusted for inflation, so it will understate today's prices, particularly for energy, food and insurance. An easy improvement would be to apply an inflation uplift, such as a CPI factor per category.
 - ONS figures are **weekly**. The API returns **monthly** values (weekly x 52 / 12). To use a different period, change `weeksPerMonth` in `internal/ons/outgoings.go`.
 - The figures are **averages for all households in a region**, not for this particular household. The extension section below describes how to improve this.
-- The figures come from an ONS survey from a past year and are not adjusted for inflation.
 
 ### About the mapping
 
@@ -136,8 +147,7 @@ These three fields return **0** because there is no good ONS equivalent:
 
 ### About cases and clients
 
-- The brief does not say where cases are stored, so `case.json` is loaded at startup and treated as the only case. The case storage sits behind an interface so a real database or service could replace it.
-- In the sample `case.json`, both clients have the **same `client_id`**. This looks like a typo. Nothing in this service depends on client IDs being unique.
+- `case.json` is loaded at startup and treated as the only case. The case storage sits behind an interface so a real database or service could replace it.
 - If a case has several clients, the postcode of the **first client that has one** is used. In the sample, both clients share an address.
 
 ## Quality and maintainability
@@ -151,6 +161,7 @@ These three fields return **0** because there is no good ONS equivalent:
 - **Timeouts:** the HTTP server has read and write timeouts so slow clients cannot hold connections open.
 - **Health check:** `/healthz` shows the service is up.
 - **Easy to change:** the HTTP code depends on small interfaces (case storage, region lookup, ONS data), not on concrete types.
+- **Commented code:** each file has short comments explaining what it does and why.
 - **Privacy:** the case contains personal data. Only the postcode is used. A real deployment would also need authentication, HTTPS and rate limiting.
 
 ## Tests
@@ -172,8 +183,11 @@ internal/domain/  Case, Client, Details and Address types
 internal/ons/     reads the spreadsheet, field mapping, calculation (with tests)
 internal/region/  postcode to region lookup (with tests)
 case.json         the sample case
-*.xlsx            the ONS datasets (region, age, composition)
+ONSByRegion2019.xlsx   the regional dataset (used)
+*.xlsx            the age and composition datasets, also 2019 (for the extension)
 ```
+
+Why it is split this way: each folder has one job. `domain` holds shared data types and imports nothing from the project, so there are no circular imports. `cases`, `region` and `ons` each hide one data source, so each can be replaced on its own. `api` knows about HTTP only. `cmd/server` is just wiring, so the real logic lives in packages that can be tested.
 
 ## Extension: hybrid values
 
@@ -230,27 +244,9 @@ Age and household type overlap (families with children tend to be in certain age
 - The zero fields (mortgage, rent, ground rent, additional details) stay at 0.
 - Apply the factors to the same ONS categories as before, then add them up using the same mapping, so nothing is double counted.
 
-### What would need to change in the code
-
-- **API:** add `?mode=hybrid` to `GET /cases/{id}/outgoings`. The default stays as the regional version, so nothing changes for existing users. An unknown mode returns 400. The response shape stays the same.
-- **Loader:** a new `ons.LoadComposition` that reads the composition spreadsheet the same way the regional loader does (header detection, matching rows by code, handling wrapped rows).
-- **Calculation:** a new method that takes the region and the household details (adults, children, optionally age) and applies the factors.
-- **Tests:** check the factor maths by hand, the limits, the fallback to regional values, and the handler with `mode=hybrid`.
-
 ### Limits of this approach
 
 - It assumes the effect of household type is the same in every region. In reality, having children might change food spending differently in London than in the North East.
 - The composition and age data are national, and some household types have small samples.
 - It is still an average for a type of household. Income, tenure and lifestyle are not captured. An adviser should always be able to overwrite the estimates with the customer's real figures.
-
-## Possible future work
-
-- Build the hybrid mode above.
-- Graceful shutdown and request logging.
-- A Dockerfile and a Makefile.
-- A test that loads the real spreadsheet and checks that rows with wrapped labels (such as water, 4.3) are not zero.
-- An OpenAPI description of the endpoints.
-- A more accurate postcode to region lookup.
-- A better source for council tax.
-- Replace the file-based case storage with a real service or database.
-- Authentication, HTTPS and rate limiting.
+- All three datasets are from 2019, so the factors and the regional amounts are from the same year and can be combined consistently. The whole result is still a 2019 figure, so it needs the same inflation uplift as the regional version.
